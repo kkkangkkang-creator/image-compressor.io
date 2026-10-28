@@ -93,6 +93,7 @@ main{display:flex;flex-direction:column;gap:16px;min-width:0}
 .sizes{font-family:var(--font-mono);font-size:13px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .sizes .from{color:var(--muted)}
 .sizes .pct{color:var(--ok);margin-left:4px}
+.sizes .pct.up{color:var(--warn)}
 .pill{display:inline-block;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;border:1px solid currentColor;white-space:nowrap}
 .pill.wait{color:var(--muted)}
 .pill.work{color:var(--accent)}
@@ -392,27 +393,30 @@ async function compressImage(file, o) {
           if (s >= o.ssim) { best = { blob: b, q: m, s, enc: '기본' }; hi = m; } else lo = m;
         }
       }
-      if (passthrough && best.blob.size >= file.size) return keepOriginal(file, ow, oh);
+      if (w === ow && h === oh && best.blob.size >= file.size) return keepOriginal(file, ow, oh);
       return { blob: best.blob, q: best.q, w, h, ow, oh, fit: true, enc: best.enc, ssim: best.s };
     }
 
     // 용량 모드: 목표 이하에서 가장 높은 화질
     if (passthrough && file.size <= o.target) return keepOriginal(file, ow, oh);
+    // 원본이 이미 목표보다 작으면 형식만 바꾸되 원본보다 커지지 않게 원본 크기를 목표로 삼음
+    const capped = file.size <= o.target;
+    const target = capped ? file.size : o.target;
     let best = null, last = null;
     for (let pass = 0; pass < 8; pass++) {
       const c = render(bmp, w, h, o.type);
       const enc = encoders(c, o.type, o.moz);
       const top = await enc.native(o.maxQ);
-      if (top.size <= o.target) { best = { blob: top, q: o.maxQ, w, h, enc: '기본' }; }
+      if (top.size <= target) { best = { blob: top, q: o.maxQ, w, h, enc: '기본' }; }
       else {
         const low = await enc.native(o.minQ);
         last = { blob: low, q: o.minQ, w, h, enc: '기본' };
-        if (low.size <= o.target) {
+        if (low.size <= target) {
           let lo = o.minQ, hi = o.maxQ;
           best = { blob: low, q: lo, w, h, enc: '기본' };
           for (let i = 0; i < 6; i++) {
             const m = (lo + hi) / 2, b = await enc.native(m);
-            if (b.size <= o.target) { best = { blob: b, q: m, w, h, enc: '기본' }; lo = m; } else hi = m;
+            if (b.size <= target) { best = { blob: b, q: m, w, h, enc: '기본' }; lo = m; } else hi = m;
           }
         }
       }
@@ -422,14 +426,14 @@ async function compressImage(file, o) {
           try {
             let lo = best.q, hi = Math.min(o.maxQ, best.q + 0.16);
             const b = await enc.moz(lo);
-            if (b.size <= o.target) {
+            if (b.size <= target) {
               let mb = { blob: b, q: lo, w, h, enc: 'MozJPEG' };
               if (hi > lo) {
                 const bh = await enc.moz(hi);
-                if (bh.size <= o.target) mb = { blob: bh, q: hi, w, h, enc: 'MozJPEG' };
+                if (bh.size <= target) mb = { blob: bh, q: hi, w, h, enc: 'MozJPEG' };
                 else for (let i = 0; i < 3; i++) {
                   const m = (lo + hi) / 2, bm = await enc.moz(m);
-                  if (bm.size <= o.target) { mb = { blob: bm, q: m, w, h, enc: 'MozJPEG' }; lo = m; } else hi = m;
+                  if (bm.size <= target) { mb = { blob: bm, q: m, w, h, enc: 'MozJPEG' }; lo = m; } else hi = m;
                 }
               }
               if (mb.q > best.q || mb.blob.size < best.blob.size) best = mb;
@@ -438,9 +442,11 @@ async function compressImage(file, o) {
         }
         break;
       }
+      // 원본보다 작게 만들 수 없을 뿐 목표 안이면, 해상도는 줄이지 않고 원본을 그대로 둠
+      if (capped && pass === 0 && w === ow && h === oh) return keepOriginal(file, ow, oh);
       if (w <= 16 || h <= 16) break;
       // 하한 화질로도 넘치면 크기를 줄여서 다시
-      const s = Math.max(0.5, Math.min(0.92, Math.sqrt(o.target / last.blob.size) * 0.97));
+      const s = Math.max(0.5, Math.min(0.98, Math.sqrt(target / last.blob.size) * 0.98));
       w = Math.max(1, Math.round(w * s)); h = Math.max(1, Math.round(h * s));
     }
     const r = best || last;
@@ -703,9 +709,13 @@ function setStatus(item, st, msg) {
   if (item.result) {
     const r = item.result, pct = Math.round((1 - r.blob.size / item.file.size) * 100);
     sizes.innerHTML = `<span class="from">${fmtSize(item.file.size)}</span> → ${fmtSize(r.blob.size)}` +
-      (pct > 0 ? `<span class="pct">−${pct}%</span>` : '') + pm;
+      (pct > 0 ? `<span class="pct">−${pct}%</span>` : pct < 0 ? `<span class="pct up">+${-pct}%</span>` : '') + pm;
     const parts = [`${r.w}×${r.h}` + (r.w !== r.ow ? ` (원본 ${r.ow}×${r.oh})` : '')];
-    if (r.kept) parts.push('다시 저장하면 손해라 원본 그대로');
+    if (r.kept) {
+      const want = document.querySelector('input[name=fmt]:checked').value;
+      parts.push(want === item.file.type ? '이미 목표 이하라 원본 그대로'
+        : `${extOf(want).toUpperCase()}로 바꾸면 원본보다 커져서 원본 형식 그대로`);
+    }
     else {
       parts.push(`화질 ${Math.round(r.q * 100)}`);
       if (r.ssim) parts.push(`SSIM ${r.ssim.toFixed(3)}`);
