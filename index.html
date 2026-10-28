@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>이미지 용량 압축기</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+/* Layout: 왼쪽 설정 패널(데스크톱에서 고정) + 오른쪽 업로드 영역과 결과 목록. 좁은 화면에선 한 줄로 쌓임 */
+:root{
+  --bg:#eef2f0; --panel:#ffffff; --fg:#14201b; --muted:#5d6b65; --line:#d5ddd9;
+  --accent:#0d6e57; --accent-ink:#ffffff; --accent-soft:#dcefe8;
+  --ok:#1d7a45; --warn:#a2610a; --bad:#b3261e;
+  --font-body:"IBM Plex Sans KR",system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f1513; --panel:#171f1c; --fg:#e4ece8; --muted:#94a39c; --line:#2a3632;
+  --accent:#3fbf98; --accent-ink:#06130f; --accent-soft:#1b332b;
+  --ok:#5fcf8c; --warn:#e5a54a; --bad:#f08079; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f1513; --panel:#171f1c; --fg:#e4ece8; --muted:#94a39c; --line:#2a3632;
+  --accent:#3fbf98; --accent-ink:#06130f; --accent-soft:#1b332b;
+  --ok:#5fcf8c; --warn:#e5a54a; --bad:#f08079; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-body);font-size:15px;line-height:1.55}
+.wrap{max-width:1180px;margin:0 auto;padding-block:28px 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:8px 24px;margin-bottom:22px}
+h1{font-size:26px;line-height:1.2;margin:0;font-weight:700;letter-spacing:-.01em;text-wrap:balance}
+header p{margin:4px 0 0;color:var(--muted);max-width:60ch}
+.privacy{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.privacy b{color:var(--accent);font-weight:600}
+.grid{display:grid;grid-template-columns:300px minmax(0,1fr);gap:20px;align-items:start}
+@media (max-width:820px){.grid{grid-template-columns:minmax(0,1fr)}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}
+aside.panel{position:sticky;top:calc(env(safe-area-inset-top,0px) + 16px);display:flex;flex-direction:column;gap:18px}
+@media (max-width:820px){aside.panel{position:static}}
+.field{display:flex;flex-direction:column;gap:6px}
+.label{font-size:12px;font-weight:600;letter-spacing:.04em;color:var(--muted)}
+.hint{font-size:12.5px;color:var(--muted);margin:0}
+.row-in{display:flex;gap:8px}
+input[type=number],select{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:8px 10px;min-width:0}
+input[type=number]{flex:1;font-family:var(--font-mono);font-size:16px}
+select{cursor:pointer}
+input:focus-visible,select:focus-visible,button:focus-visible,.drop:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+.seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg label{position:relative;text-align:center;padding:9px 6px;cursor:pointer;font-weight:600;font-size:14px}
+.seg label+label{border-left:1px solid var(--line)}
+.seg input{position:absolute;opacity:0;inset:0;cursor:pointer}
+.seg label:has(input:checked){background:var(--accent);color:var(--accent-ink)}
+.seg label:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:-4px}
+.seg label:has(input:disabled){opacity:.45;cursor:not-allowed}
+.seg small{display:block;font-weight:400;font-size:11.5px;opacity:.8}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.rangeval{font-family:var(--font-mono);font-size:13px}
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg);padding:9px 14px;font-weight:600}
+button:hover:not(:disabled){border-color:var(--accent)}
+button:disabled{opacity:.45;cursor:not-allowed}
+.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.primary:hover:not(:disabled){filter:brightness(1.08)}
+main{display:flex;flex-direction:column;gap:16px;min-width:0}
+.drop{position:relative;border:2px dashed var(--line);border-radius:10px;background:var(--panel);padding:26px 18px;text-align:center;transition:border-color .15s,background .15s}
+.drop.over{border-color:var(--accent);background:var(--accent-soft)}
+.drop input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%}
+.drop strong{font-size:17px;display:block}
+.drop span{color:var(--muted);font-size:13.5px}
+.summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+@media (max-width:560px){.summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.stat{background:var(--panel);padding:12px 14px}
+.stat .k{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.03em}
+.stat .v{font-family:var(--font-mono);font-size:19px;font-weight:500;font-variant-numeric:tabular-nums;white-space:nowrap}
+.bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+.actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.actions .spacer{flex:1}
+.notice{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;background:var(--accent-soft);border:1px solid var(--accent);border-radius:8px;padding:10px 14px;font-size:14px}
+.list{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.list-head,.item{display:grid;grid-template-columns:48px minmax(0,1fr) 190px 92px 40px;gap:12px;align-items:center;padding:8px 14px}
+.list-head{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.03em;border-bottom:1px solid var(--line);padding-block:10px}
+.item+.item{border-top:1px solid var(--line)}
+.thumb{width:48px;height:48px;border-radius:6px;object-fit:cover;background:var(--bg);display:block}
+.name{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meta{font-size:12.5px;color:var(--muted);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sizes{font-family:var(--font-mono);font-size:13px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.sizes .from{color:var(--muted)}
+.sizes .pct{color:var(--ok);margin-left:4px}
+.pill{display:inline-block;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;border:1px solid currentColor;white-space:nowrap}
+.pill.wait{color:var(--muted)}
+.pill.work{color:var(--accent)}
+.pill.done{color:var(--ok)}
+.pill.over{color:var(--warn)}
+.pill.err{color:var(--bad)}
+.tag{font-size:11px;font-weight:600;color:var(--accent);border:1px solid var(--accent);border-radius:4px;padding:0 5px;margin-right:6px;vertical-align:1px}
+.dl{width:36px;height:36px;padding:0;display:grid;place-items:center}
+.dl svg{width:17px;height:17px}
+.empty{padding:28px;text-align:center;color:var(--muted)}
+@media (max-width:640px){
+  .list-head{display:none}
+  .item{grid-template-columns:48px minmax(0,1fr) 40px;grid-template-areas:"t n d" "t s d";row-gap:2px}
+  .item .thumb{grid-area:t}.item .info{grid-area:n}.item .sizes{grid-area:s}.item .st{display:none}.item .dl{grid-area:d}
+  .item .sizes .pill-m{display:inline}
+}
+.pill-m{display:none;margin-left:6px}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:8px;font-size:14px;z-index:20;max-width:calc(100% - 32px)}
+footer{margin-top:22px;color:var(--muted);font-size:13px;max-width:72ch}
+footer p{margin:4px 0}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+<style>body{margin:0}[hidden]{display:none!important}img{max-width:100%}</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>이미지 용량 압축기</h1>
+      <p>목표 용량을 정하면, 그 용량 안에서 화질이 가장 좋은 지점을 찾아 JPG 또는 WebP로 바꿔 드려요. 한 번에 수백 장도 됩니다.</p>
+    </div>
+    <div class="privacy"><b>●</b> 사진은 서버로 보내지지 않고 이 브라우저 안에서만 처리돼요</div>
+  </header>
+
+  <div class="grid">
+    <aside class="panel" aria-label="변환 설정">
+      <div class="field">
+        <label class="label" for="target">장당 목표 용량</label>
+        <div class="row-in">
+          <input id="target" type="number" min="5" step="1" value="200" inputmode="decimal">
+          <select id="unit" aria-label="단위"><option value="1024" selected>KB</option><option value="1048576">MB</option></select>
+        </div>
+        <p class="hint">이 용량을 넘지 않는 선에서 화질을 최대한 높게 맞춰요.</p>
+      </div>
+
+      <div class="field">
+        <span class="label" id="fmt-l">저장 형식</span>
+        <div class="seg" role="radiogroup" aria-labelledby="fmt-l">
+          <label><input type="radio" name="fmt" id="fmt-jpg" value="image/jpeg" checked>JPG<small>어디서나 열림</small></label>
+          <label><input type="radio" name="fmt" id="fmt-webp" value="image/webp">WebP<small>같은 용량에 더 선명</small></label>
+        </div>
+        <p class="hint" id="webp-note" hidden>이 브라우저는 WebP 저장을 지원하지 않아요. Chrome, Edge, Firefox에서 열어 주세요.</p>
+      </div>
+
+      <div class="field">
+        <label class="label" for="maxside">최대 크기 (긴 변)</label>
+        <select id="maxside">
+          <option value="0" selected>원본 크기 유지</option>
+          <option value="3840">3840px (4K)</option>
+          <option value="2560">2560px</option>
+          <option value="1920">1920px (FHD)</option>
+          <option value="1280">1280px</option>
+          <option value="1024">1024px</option>
+          <option value="800">800px</option>
+        </select>
+        <p class="hint">작게 줄이면 같은 용량에서 화질이 더 좋아져요.</p>
+      </div>
+
+      <div class="field">
+        <label class="label" for="minq">화질 하한 <span class="rangeval" id="minq-v">50</span></label>
+        <input id="minq" type="range" min="20" max="85" step="5" value="50">
+        <p class="hint">이 화질로도 목표를 못 맞추면 화질 대신 가로세로 크기를 줄여요.</p>
+      </div>
+    </aside>
+
+    <main>
+      <div class="drop" id="drop">
+        <input id="files" type="file" accept="image/*" multiple aria-label="이미지 선택">
+        <strong>이미지를 여기로 끌어오거나 눌러서 선택</strong>
+        <span>JPG · PNG · WebP · GIF · BMP 등, 여러 장 한꺼번에 (500장 이상도 가능)</span>
+      </div>
+
+      <div class="notice" id="redo" hidden>
+        <span>설정이 바뀌었어요. 새 설정으로 다시 변환할까요?</span>
+        <button class="primary" id="redo-btn" type="button">다시 변환</button>
+      </div>
+
+      <div class="summary" aria-live="polite">
+        <div class="stat"><div class="k">진행</div><div class="v" id="s-count">0 / 0</div></div>
+        <div class="stat"><div class="k">원본 합계</div><div class="v" id="s-orig">0 KB</div></div>
+        <div class="stat"><div class="k">변환 후 합계</div><div class="v" id="s-new">0 KB</div></div>
+        <div class="stat"><div class="k">줄어든 비율</div><div class="v" id="s-pct">–</div></div>
+      </div>
+      <div class="bar" aria-hidden="true"><i id="bar"></i></div>
+
+      <div class="actions">
+        <button class="primary" id="zip" type="button" disabled>전체 ZIP으로 저장</button>
+        <button id="clear" type="button">목록 비우기</button>
+        <span class="spacer"></span>
+        <span class="hint" id="status"></span>
+      </div>
+
+      <div class="list" id="list">
+        <div class="list-head"><span></span><span>파일</span><span>원본 → 결과</span><span>상태</span><span></span></div>
+        <div class="empty" id="empty">아직 이미지가 없어요. 위에서 이미지를 넣어 주세요.</div>
+      </div>
+    </main>
+  </div>
+
+  <footer>
+    <p>투명 배경은 JPG로 바꿀 때 흰색으로 채워져요. WebP는 투명을 그대로 유지해요.</p>
+    <p>‘초과’로 표시된 사진은 크기를 줄여도 목표에 닿지 못한 경우예요. 목표 용량을 조금 올리거나 최대 크기를 낮춰 보세요.</p>
+  </footer>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+/* ---------- 압축 핵심 함수 (워커와 메인 스레드가 같이 씀) ---------- */
+function makeCanvas(w, h) {
+  if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(w, h);
+  if (typeof document === 'undefined') throw new Error('NO_CANVAS');
+  const c = document.createElement('canvas'); c.width = w; c.height = h; return c;
+}
+function encode(c, type, q) {
+  if (c.convertToBlob) return c.convertToBlob({ type, quality: q });
+  return new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error('인코딩 실패')), type, q));
+}
+async function decodeImage(file) {
+  try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch (e) {}
+  try { return await createImageBitmap(file); } catch (e) {}
+  throw new Error('이미지를 열 수 없어요 (지원하지 않는 형식일 수 있어요)');
+}
+async function compressImage(file, o) {
+  const bmp = await decodeImage(file);
+  const ow = bmp.width, oh = bmp.height;
+  let w = ow, h = oh;
+  if (o.maxSide && Math.max(w, h) > o.maxSide) {
+    const s = o.maxSide / Math.max(w, h); w = Math.round(w * s); h = Math.round(h * s);
+  }
+  let best = null, last = null;
+  for (let pass = 0; pass < 8; pass++) {
+    const c = makeCanvas(w, h);
+    const ctx = c.getContext('2d');
+    if (!ctx) throw new Error('NO_CANVAS');
+    if (o.type === 'image/jpeg') { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); }
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bmp, 0, 0, w, h);
+    const top = await encode(c, o.type, o.maxQ);
+    if (top.type !== o.type) throw new Error('이 브라우저는 이 형식으로 저장할 수 없어요');
+    if (top.size <= o.target) { best = { blob: top, q: o.maxQ, w, h }; break; }
+    const low = await encode(c, o.type, o.minQ);
+    last = { blob: low, q: o.minQ, w, h };
+    if (low.size <= o.target) {
+      // 목표 안에 드는 가장 높은 품질을 이분 탐색
+      let lo = o.minQ, hi = o.maxQ;
+      best = { blob: low, q: lo, w, h };
+      for (let i = 0; i < 6; i++) {
+        const m = (lo + hi) / 2;
+        const b = await encode(c, o.type, m);
+        if (b.size <= o.target) { best = { blob: b, q: m, w, h }; lo = m; } else hi = m;
+      }
+      break;
+    }
+    if (w <= 16 || h <= 16) break;
+    // 하한 화질로도 넘치면 크기를 줄여서 다시
+    const s = Math.max(0.5, Math.min(0.92, Math.sqrt(o.target / low.size) * 0.97));
+    w = Math.max(1, Math.round(w * s)); h = Math.max(1, Math.round(h * s));
+  }
+  if (bmp.close) bmp.close();
+  const r = best || last;
+  return { blob: r.blob, q: r.q, w: r.w, h: r.h, ow, oh, fit: !!best };
+}
+
+/* ---------- 작업 풀 ---------- */
+const workerSrc = [makeCanvas, encode, decodeImage, compressImage].map(String).join('\n') +
+  `\nself.onmessage = async (e) => {
+    try { const r = await compressImage(e.data.file, e.data.opts); self.postMessage({ ok: true, ...r }); }
+    catch (err) { const m = String(err && err.message || err); self.postMessage({ ok: false, fallback: m === 'NO_CANVAS', error: m }); }
+  };`;
+
+let pool = [], useMain = typeof OffscreenCanvas === 'undefined', mainBusy = false;
+const queue = [];
+if (!useMain) {
+  try {
+    const url = URL.createObjectURL(new Blob([workerSrc], { type: 'text/javascript' }));
+    const n = Math.min(4, Math.max(1, (navigator.hardwareConcurrency || 2) - 1));
+    for (let i = 0; i < n; i++) {
+      const slot = { w: new Worker(url), cb: null };
+      slot.w.onmessage = e => { const cb = slot.cb; slot.cb = null; if (cb) cb(e.data); pump(); };
+      slot.w.onerror = e => { e.preventDefault(); const cb = slot.cb; slot.cb = null; if (cb) cb({ ok: false, fallback: true }); pump(); };
+      pool.push(slot);
+    }
+  } catch (e) { useMain = true; pool = []; }
+}
+
+function opts() {
+  const target = Math.max(1, parseFloat($('#target').value) || 200) * Number($('#unit').value);
+  return {
+    type: document.querySelector('input[name=fmt]:checked').value,
+    target: Math.floor(target),
+    maxSide: Number($('#maxside').value),
+    minQ: Number($('#minq').value) / 100,
+    maxQ: 0.95
+  };
+}
+
+function pump() {
+  if (useMain) {
+    if (mainBusy || !queue.length) return;
+    mainBusy = true;
+    const { item, ver, o } = queue.shift();
+    setStatus(item, 'work');
+    compressImage(item.file, o)
+      .then(r => finish(item, ver, { ok: true, ...r }))
+      .catch(err => finish(item, ver, { ok: false, error: String(err && err.message || err) }))
+      .finally(() => { mainBusy = false; pump(); });
+    return;
+  }
+  for (const slot of pool) {
+    if (slot.cb || !queue.length) continue;
+    const job = queue.shift();
+    setStatus(job.item, 'work');
+    slot.cb = data => {
+      if (data.fallback) { useMain = true; queue.unshift(job); return; }
+      finish(job.item, job.ver, data);
+    };
+    slot.w.postMessage({ file: job.item.file, opts: job.o });
+  }
+}
+
+/* ---------- 상태와 화면 ---------- */
+const $ = s => document.querySelector(s);
+let items = [], seq = 0, processedOpts = null;
+
+const fmtSize = b => b >= 1048576 ? (b / 1048576).toFixed(2) + ' MB' : Math.max(0, Math.round(b / 1024)) + ' KB';
+const extOf = t => t === 'image/webp' ? 'webp' : 'jpg';
+const DL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>';
+const PILL = { wait: '대기', work: '처리 중', done: '완료', over: '초과', err: '오류' };
+
+function addFiles(fileList, sample) {
+  const files = [...fileList].filter(f => f.type.startsWith('image/') || /\.(jpe?g|png|webp|gif|bmp|avif|heic|heif|tiff?)$/i.test(f.name));
+  if (!files.length) { toast('이미지 파일이 없어요'); return; }
+  if (!sample) removeSamples();
+  $('#empty').hidden = true;
+  const o = opts(); processedOpts = JSON.stringify(o); $('#redo').hidden = true;
+  const frag = document.createDocumentFragment();
+  for (const f of files) {
+    const item = { id: ++seq, file: f, name: f.name, sample: !!sample, status: 'wait', ver: 0, result: null, url: null };
+    item.el = buildRow(item);
+    frag.appendChild(item.el);
+    items.push(item);
+    enqueue(item, o);
+  }
+  $('#list').appendChild(frag);
+  summary(); pump();
+}
+
+function enqueue(item, o) {
+  item.ver++;
+  if (item.url) { URL.revokeObjectURL(item.url); item.url = null; }
+  item.result = null;
+  queue.push({ item, ver: item.ver, o });
+  setStatus(item, 'wait');
+}
+
+function buildRow(item) {
+  const el = document.createElement('div');
+  el.className = 'item';
+  el.innerHTML = `<img class="thumb" alt="" loading="lazy">
+    <div class="info"><div class="name"></div><div class="meta"></div></div>
+    <div class="sizes"></div>
+    <div class="st"><span class="pill wait">대기</span></div>
+    <button class="dl" type="button" disabled aria-label="이 이미지 저장">${DL_ICON}</button>`;
+  const nm = el.querySelector('.name');
+  if (item.sample) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = '예시'; nm.appendChild(t); }
+  nm.appendChild(document.createTextNode(item.name));
+  nm.title = item.name;
+  el.querySelector('.dl').addEventListener('click', () => item.result && saveFile(item.result.blob, outName(item)));
+  return el;
+}
+
+function setStatus(item, st, msg) {
+  item.status = st;
+  const el = item.el; if (!el) return;
+  const pill = el.querySelector('.st .pill');
+  pill.className = 'pill ' + st; pill.textContent = PILL[st];
+  const sizes = el.querySelector('.sizes'), meta = el.querySelector('.meta');
+  const pm = `<span class="pill pill-m ${st}">${PILL[st]}</span>`;
+  if (item.result) {
+    const r = item.result, pct = Math.round((1 - r.blob.size / item.file.size) * 100);
+    sizes.innerHTML = `<span class="from">${fmtSize(item.file.size)}</span> → ${fmtSize(r.blob.size)}` +
+      (pct > 0 ? `<span class="pct">−${pct}%</span>` : '') + pm;
+    meta.textContent = `${r.w}×${r.h}` + (r.w !== r.ow ? ` (원본 ${r.ow}×${r.oh})` : '') + ` · 화질 ${Math.round(r.q * 100)} · ${extOf(r.blob.type).toUpperCase()}`;
+    el.querySelector('.thumb').src = item.url;
+    el.querySelector('.dl').disabled = false;
+  } else {
+    sizes.innerHTML = `<span class="from">${fmtSize(item.file.size)}</span>` + pm;
+    meta.textContent = msg || (st === 'work' ? '최적 화질을 찾는 중…' : '');
+    if (msg) meta.title = msg;
+    el.querySelector('.thumb').removeAttribute('src');
+    el.querySelector('.dl').disabled = true;
+  }
+}
+
+function finish(item, ver, data) {
+  if (item.ver !== ver || !items.includes(item)) return;
+  if (data.ok) {
+    item.result = data;
+    item.url = URL.createObjectURL(data.blob);
+    setStatus(item, data.fit ? 'done' : 'over');
+  } else {
+    setStatus(item, 'err', data.error || '변환하지 못했어요');
+  }
+  summary();
+}
+
+let sumRaf = 0;
+function summary() {
+  if (sumRaf) return;
+  sumRaf = requestAnimationFrame(() => {
+    sumRaf = 0;
+    const total = items.length;
+    const finished = items.filter(i => i.status === 'done' || i.status === 'over' || i.status === 'err');
+    const withRes = items.filter(i => i.result);
+    const orig = withRes.reduce((a, i) => a + i.file.size, 0);
+    const now = withRes.reduce((a, i) => a + i.result.blob.size, 0);
+    $('#s-count').textContent = `${finished.length} / ${total}`;
+    $('#s-orig').textContent = fmtSize(orig);
+    $('#s-new').textContent = fmtSize(now);
+    $('#s-pct').textContent = orig ? `−${Math.max(0, Math.round((1 - now / orig) * 100))}%` : '–';
+    $('#bar').style.width = total ? (finished.length / total * 100) + '%' : '0';
+    const z = $('#zip');
+    z.disabled = !withRes.length || zipping;
+    if (!zipping) z.textContent = withRes.length ? `전체 ZIP으로 저장 (${withRes.length}장)` : '전체 ZIP으로 저장';
+    const over = items.filter(i => i.status === 'over').length, err = items.filter(i => i.status === 'err').length;
+    const busy = finished.length < total;
+    $('#status').textContent = busy ? '변환 중…' :
+      total ? [over && `초과 ${over}장`, err && `오류 ${err}장`].filter(Boolean).join(' · ') || '모두 목표 용량 이하예요' : '';
+    $('#empty').hidden = total > 0;
+  });
+}
+
+function outName(item) {
+  const base = item.name.replace(/\.[^.]+$/, '') || 'image';
+  return `${base}.${extOf(item.result.blob.type)}`;
+}
+
+function removeSamples() {
+  const keep = [];
+  for (const i of items) {
+    if (i.sample) { i.ver++; if (i.url) URL.revokeObjectURL(i.url); i.el.remove(); } else keep.push(i);
+  }
+  items = keep;
+  for (let k = queue.length - 1; k >= 0; k--) if (queue[k].item.sample) queue.splice(k, 1);
+}
+
+/* ---------- 저장 ---------- */
+const dlP = (window.claude && window.claude.use ? window.claude.use('downloads') : Promise.resolve(null)).catch(() => null);
+async function saveFile(blob, filename) {
+  const dl = await dlP;
+  if (dl) {
+    try { await dl.save({ filename, data: blob }); toast('저장했어요'); }
+    catch (e) {
+      if (e && e.code === 'declined') toast('저장을 취소했어요');
+      else if (e && e.code === 'rate_limited') toast('잠시 후 다시 눌러 주세요');
+      else toast('저장하지 못했어요' + (e && e.message ? ': ' + e.message : ''));
+    }
+    return;
+  }
+  // 직접 호스팅할 때의 일반 다운로드
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+}
+
+let zipping = false;
+$('#zip').addEventListener('click', async () => {
+  if (typeof JSZip === 'undefined') { toast('ZIP 기능을 불러오지 못했어요. 새로고침해 주세요'); return; }
+  const ready = items.filter(i => i.result);
+  if (!ready.length) return;
+  zipping = true; const z = $('#zip'); z.disabled = true;
+  try {
+    const zip = new JSZip(), used = new Map();
+    for (const i of ready) {
+      let n = outName(i);
+      const key = n.toLowerCase();
+      if (used.has(key)) { const c = used.get(key) + 1; used.set(key, c); n = n.replace(/(\.[^.]+)$/, ` (${c})$1`); }
+      else used.set(key, 1);
+      zip.file(n, i.result.blob);
+    }
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' },
+      m => { z.textContent = `ZIP 만드는 중… ${Math.round(m.percent)}%`; });
+    const d = new Date(), p = v => String(v).padStart(2, '0');
+    await saveFile(blob, `compressed-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.zip`);
+  } catch (e) { toast('ZIP을 만들지 못했어요: ' + (e.message || e)); }
+  zipping = false; summary();
+});
+
+/* ---------- 입력 ---------- */
+const drop = $('#drop');
+$('#files').addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
+['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(t => drop.addEventListener(t, () => drop.classList.remove('over')));
+drop.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files); });
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer && e.dataTransfer.files.length && !drop.contains(e.target)) addFiles(e.dataTransfer.files); });
+document.addEventListener('paste', e => { const f = [...(e.clipboardData?.files || [])]; if (f.length) addFiles(f); });
+
+function settingsChanged() {
+  $('#minq-v').textContent = $('#minq').value;
+  try { localStorage.setItem('squeeze-opts', JSON.stringify({ t: $('#target').value, u: $('#unit').value, f: document.querySelector('input[name=fmt]:checked').value, m: $('#maxside').value, q: $('#minq').value })); } catch (e) {}
+  $('#redo').hidden = !items.length || JSON.stringify(opts()) === processedOpts;
+}
+['#target', '#unit', '#maxside', '#minq'].forEach(s => $(s).addEventListener('input', settingsChanged));
+document.querySelectorAll('input[name=fmt]').forEach(r => r.addEventListener('change', settingsChanged));
+$('#redo-btn').addEventListener('click', () => {
+  const o = opts(); processedOpts = JSON.stringify(o); $('#redo').hidden = true;
+  queue.length = 0;
+  items.forEach(i => enqueue(i, o));
+  summary(); pump();
+});
+$('#clear').addEventListener('click', () => {
+  queue.length = 0;
+  items.forEach(i => { i.ver++; if (i.url) URL.revokeObjectURL(i.url); i.el.remove(); });
+  items = []; $('#redo').hidden = true; summary();
+});
+
+let toastT;
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 2600); }
+
+/* ---------- 초기화 ---------- */
+try {
+  const s = JSON.parse(localStorage.getItem('squeeze-opts') || 'null');
+  if (s) {
+    $('#target').value = s.t; $('#unit').value = s.u; $('#maxside').value = s.m; $('#minq').value = s.q;
+    const r = document.querySelector(`input[name=fmt][value="${s.f}"]`); if (r) r.checked = true;
+  }
+} catch (e) {}
+$('#minq-v').textContent = $('#minq').value;
+
+const probe = document.createElement('canvas'); probe.width = probe.height = 2;
+if (!probe.toDataURL('image/webp').startsWith('data:image/webp')) {
+  const w = $('#fmt-webp'); w.disabled = true; $('#webp-note').hidden = false;
+  if (w.checked) $('#fmt-jpg').checked = true;
+}
+
+// 예시 이미지 3장을 만들어 바로 변환해 보여 줌 (사진을 넣으면 사라짐)
+function makeSample(w, h, hues, seed) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d');
+  const g = x.createLinearGradient(0, 0, w * .3, h);
+  g.addColorStop(0, `hsl(${hues[0]} 70% 62%)`); g.addColorStop(1, `hsl(${hues[1]} 55% 28%)`);
+  x.fillStyle = g; x.fillRect(0, 0, w, h);
+  let r = seed; const rnd = () => (r = (r * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < 90; i++) {
+    x.fillStyle = `hsla(${hues[i % 2] + rnd() * 40} 60% ${30 + rnd() * 50}% / ${.15 + rnd() * .35})`;
+    x.beginPath(); x.arc(rnd() * w, rnd() * h, 20 + rnd() * w * .12, 0, 7); x.fill();
+  }
+  const d = x.getImageData(0, 0, w, h), p = d.data;
+  for (let i = 0; i < p.length; i += 4) { const n = (rnd() - .5) * 16; p[i] += n; p[i + 1] += n; p[i + 2] += n; }
+  x.putImageData(d, 0, 0);
+  return new Promise(res => c.toBlob(res, 'image/png'));
+}
+setTimeout(async () => {
+  if (items.length) return;
+  const specs = [['노을.png', 2400, 1600, [24, 280], 7], ['숲.png', 1600, 2000, [130, 190], 13], ['바다.png', 3000, 1700, [195, 230], 29]];
+  const files = [];
+  for (const [n, w, h, hu, s] of specs) {
+    const b = await makeSample(w, h, hu, s);
+    if (b) files.push(new File([b], n, { type: 'image/png' }));
+  }
+  if (!items.length && files.length) addFiles(files, true);
+}, 50);
+summary();
+</script>
+</body>
+</html>
